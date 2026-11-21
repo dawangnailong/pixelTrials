@@ -1,0 +1,416 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""《浴后·暖意》参数化矢量动画源。
+成年角色设定：岚，28 岁，成年狼兽人。非露骨、腰间浴巾全程遮挡。
+统一模型空间：1920×1080，地面 y=944；所有通道仅由 t 驱动。
+"""
+from __future__ import annotations
+import argparse, math, random, subprocess
+from pathlib import Path
+from xml.sax.saxutils import escape
+
+W, H, FPS, DURATION = 1920, 1080, 24, 8.0
+SEED = 20261120
+P = {
+    'bg0':'#101d26','bg1':'#24414a','tile':'#31535a','tileLine':'#527078',
+    'amber':'#f3c68a','cream':'#f3e6cf','furDark':'#263943','furShadow':'#3d5561',
+    'furMid':'#657e89','furLight':'#a9bcc0','furCream':'#d6d4c5','ink':'#172a33',
+    'eye':'#f3bd58','nose':'#17252c','towel':'#d9b37c','towelWet':'#a77c50',
+    'towelLight':'#f1d5a6','waist':'#2c7c80','waistDark':'#17545d','water':'#bcecf1',
+    'steam':'#d8f0e9','shadow':'#0a171e','brass':'#b68a55','white':'#fff8e8',
+    'bgDeep':'#09141c','amberShade':'#b9885b','pecLight':'#b7c3bf','pecShade':'#9fb1b2',
+    'abLine':'#667a7c','wetClump':'#758c8e','waistLight':'#69aaa4','waistFold':'#b0d0bf',
+    'earInner':'#a77d78','muzzle':'#d8d3bf','eyeWhite':'#eef0dc','towelEdge':'#765338',
+    'chestHi':'#e2dfcf','chestLow':'#9da9a6','waistGrad':'#58a3a0','puddleEdge':'#366c7a',
+    'puddleMid':'#5eabb5','puddleCore':'#9adce2','eyeDeep':'#a86325','eyeCore':'#fff4b0',
+    'window':'#82a7a7','windowFrost':'#c5ddd2','floor':'#122832','floorEdge':'#6f8a89',
+    'floorLine':'#4e7278','drain':'#0b1b23','drainEdge':'#48636a','drainSlat':'#779095',
+    'waterRing':'#8ccbd0','waterPuddle':'#80c6cc'
+}
+
+def f(v: float) -> str:
+    return f'{v:.2f}'.rstrip('0').rstrip('.')
+def clamp(x,a=0.,b=1.): return max(a,min(b,x))
+def mix(a,b,u): return a+(b-a)*u
+def smooth(x,a,b):
+    u=clamp((x-a)/(b-a)); return u*u*(3-2*u)
+def ease(x): return x*x*(3-2*x)
+def color_mix(c1,c2,u):
+    a=tuple(int(c1[i:i+2],16) for i in (1,3,5)); b=tuple(int(c2[i:i+2],16) for i in (1,3,5))
+    return '#'+''.join(f'{round(mix(a[i],b[i],u)):02x}' for i in range(3))
+def attrs(**kw):
+    out=[]
+    for k,v in kw.items():
+        if v is None: continue
+        k=k.rstrip('_').replace('_','-')
+        out.append(f'{k}="{escape(str(v))}"')
+    return ' '.join(out)
+def el(name,content='',**kw): return f'<{name} {attrs(**kw)}>{content}</{name}>'
+def empty(name,**kw): return f'<{name} {attrs(**kw)}/>'
+def group(content,id_,**kw): return el('g',content,id=id_,**kw)
+def path(d,**kw): return empty('path',d=d,**kw)
+def ellipse(cx,cy,rx,ry,**kw): return empty('ellipse',cx=f(cx),cy=f(cy),rx=f(rx),ry=f(ry),**kw)
+def circle(cx,cy,r,**kw): return empty('circle',cx=f(cx),cy=f(cy),r=f(r),**kw)
+def line(x1,y1,x2,y2,**kw): return empty('line',x1=f(x1),y1=f(y1),x2=f(x2),y2=f(y2),**kw)
+def rect(x,y,w,h,**kw): return empty('rect',x=f(x),y=f(y),width=f(w),height=f(h),**kw)
+def txt(x,y,s,**kw): return el('text',escape(s),x=f(x),y=f(y),**kw)
+
+def keys(t, table):
+    if t<=table[0][0]: return table[0][1]
+    for (ta,a),(tb,b) in zip(table,table[1:]):
+        if t<=tb:
+            u=ease((t-ta)/(tb-ta))
+            if isinstance(a,(tuple,list)): return tuple(mix(x,y,u) for x,y in zip(a,b))
+            return mix(a,b,u)
+    return table[-1][1]
+
+def defs():
+    stops=lambda arr: ''.join(empty('stop',offset=o,stop_color=c,stop_opacity=op) for o,c,op in arr)
+    return f'''<defs>
+    <linearGradient id="渐变_背景" x1="0" y1="0" x2="1" y2="1">{stops([('0',P['bg1'],1),('0.55',P['bg0'],1),('1',P['bgDeep'],1)])}</linearGradient>
+    <radialGradient id="渐变_暖光" cx="0.22" cy="0.18" r="0.82">{stops([('0',P['amber'],'0.30'),('0.42',P['amberShade'],'0.08'),('1',P['bg0'],'0')])}</radialGradient>
+    <linearGradient id="渐变_毛发" x1="0.12" y1="0.08" x2="0.9" y2="0.92">{stops([('0',P['furLight'],1),('0.28',P['furMid'],1),('0.72',P['furShadow'],1),('1',P['furDark'],1)])}</linearGradient>
+    <linearGradient id="渐变_胸腹" x1="0.1" y1="0" x2="0.8" y2="1">{stops([('0',P['chestHi'],1),('0.5',P['furCream'],1),('1',P['chestLow'],1)])}</linearGradient>
+    <linearGradient id="渐变_毛巾" x1="0" y1="0" x2="0.85" y2="1">{stops([('0',P['towelLight'],1),('0.48',P['towel'],1),('1',P['towelWet'],1)])}</linearGradient>
+    <linearGradient id="渐变_浴巾" x1="0" y1="0" x2="1" y2="0.8">{stops([('0',P['waistGrad'],1),('0.45',P['waist'],1),('1',P['waistDark'],1)])}</linearGradient>
+    <radialGradient id="渐变_水渍">{stops([('0',P['puddleCore'],'0.24'),('0.65',P['puddleMid'],'0.13'),('1',P['puddleEdge'],'0')])}</radialGradient>
+    <radialGradient id="渐变_眼神">{stops([('0',P['eyeCore'],1),('0.45',P['eye'],1),('1',P['eyeDeep'],1)])}</radialGradient>
+    </defs>'''
+
+def background(t):
+    s=[rect(0,0,W,H,fill='url(#渐变_背景)'),rect(0,0,W,H,fill='url(#渐变_暖光)')]
+    # 墙面大砖：统一模型坐标，不采用贴图。
+    for row in range(5):
+        y=80+row*154
+        s.append(line(0,y,W,y,stroke=P['tileLine'],stroke_width='2',opacity='0.22'))
+        offset=110 if row%2 else 0
+        for col in range(10):
+            x=col*220+offset
+            s.append(line(x,y,x,y+154,stroke=P['tileLine'],stroke_width='2',opacity='0.16'))
+    # 左侧磨砂窗与暖色灯带。
+    s += [rect(92,105,360,455,rx='180',fill=P['window'],opacity='0.09',stroke=P['brass'],stroke_width='5'),
+          path('M112 420 Q270 335 432 398 L432 540 L112 540 Z',fill=P['windowFrost'],opacity='0.07'),
+          line(272,112,272,552,stroke=P['brass'],stroke_width='4',opacity='0.55'),
+          rect(68,90,18,610,rx='9',fill=P['amber'],opacity='0.20'),
+          rect(1510,118,250,18,rx='9',fill=P['brass'],opacity='0.72'),
+          rect(1550,135,18,350,rx='9',fill=P['brass'],opacity='0.40'),
+          path('M1530 505 Q1640 438 1740 505',fill='none',stroke=P['brass'],stroke_width='16',stroke_linecap='round',opacity='0.55')]
+    # 地面、踢脚与排水槽。
+    s += [path('M0 792 Q960 748 1920 796 L1920 1080 L0 1080 Z',fill=P['floor']),
+          line(0,792,1920,796,stroke=P['floorEdge'],stroke_width='4',opacity='0.28'),
+          path('M0 965 Q960 910 1920 970',fill='none',stroke=P['floorLine'],stroke_width='3',opacity='0.25'),
+          path('M1470 935 L1755 950 L1732 976 L1452 960 Z',fill=P['drain'],stroke=P['drainEdge'],stroke_width='3')]
+    for i in range(13):
+        x=1472+i*21; y=938+(x-1470)*0.052
+        s.append(line(x,y,x-8,y+20,stroke=P['drainSlat'],stroke_width='3',opacity='0.42'))
+    return group(''.join(s),'背景_浴室_层')
+
+def steam(t,foreground=False):
+    rng=random.Random(SEED+(91 if foreground else 17)); items=[]
+    count=6 if foreground else 11
+    for i in range(count):
+        x0=rng.uniform(120,1800); y0=rng.uniform(460,990); amp=rng.uniform(18,58)
+        speed=rng.uniform(12,28); phase=rng.uniform(0,math.tau)
+        rise=(t*speed+i*53)%330
+        y=y0-rise; x=x0+amp*math.sin(t*0.48+phase)
+        op=(0.035 if foreground else 0.055)*(0.65+0.35*math.sin(math.pi*rise/330))
+        d=f'M{f(x)} {f(y+145)} C{f(x-amp)} {f(y+100)} {f(x+amp)} {f(y+45)} {f(x)} {f(y)} C{f(x-amp*.7)} {f(y-45)} {f(x+amp*.6)} {f(y-80)} {f(x+5)} {f(y-120)}'
+        items.append(path(d,fill='none',stroke=P['steam'],stroke_width=f(rng.uniform(20,42) if foreground else rng.uniform(12,28)),stroke_linecap='round',opacity=f(op)))
+    return group(''.join(items),'FX_前景蒸汽_层' if foreground else 'FX_远景蒸汽_层')
+
+def ground_fx(t,dry):
+    s=[ellipse(956,950,365,67,fill=P['shadow'],opacity='0.52'),
+       ellipse(948,944,280+90*dry,54+13*dry,fill='url(#渐变_水渍)'),
+       ellipse(840,945,132,24,fill=P['waterPuddle'],opacity='0.10'),
+       ellipse(1100,953,145,25,fill=P['waterPuddle'],opacity='0.08')]
+    for i in range(7):
+        r=90+i*37+18*math.sin(t*.35+i)
+        s.append(path(f'M{f(960-r)} {f(948+i*2)} Q960 {f(914+i*3)} {f(960+r)} {f(950+i*2)}',fill='none',stroke=P['waterRing'],stroke_width='2',opacity=f(.09*(1-dry*.5))))
+    return group(''.join(s),'环境_水渍与接触影_层')
+
+def ik(shoulder,wrist,bend):
+    sx,sy=shoulder; wx,wy=wrist; dx,dy=wx-sx,wy-sy; dist=max(1,math.hypot(dx,dy))
+    l1,l2=174.,166.; d=min(dist,l1+l2-2)
+    ux,uy=dx/dist,dy/dist; a=(l1*l1-l2*l2+d*d)/(2*d); h=math.sqrt(max(0,l1*l1-a*a))
+    mx,my=sx+ux*a,sy+uy*a
+    return (mx-uy*h*bend,my+ux*h*bend)
+
+def limb(shoulder,elbow_,wrist,id_,back=False):
+    base=P['furShadow'] if back else P['furMid']
+    # 二次贝塞尔让上臂—前臂形成连续肌肉曲线，避免机械管状折线。
+    d=f'M{f(shoulder[0])} {f(shoulder[1])} Q{f(elbow_[0])} {f(elbow_[1])} {f(wrist[0])} {f(wrist[1])}'
+    s=[path(d,fill='none',stroke=P['ink'],stroke_width='82',stroke_linecap='round',opacity='0.88'),
+       path(d,fill='none',stroke=base,stroke_width='70',stroke_linecap='round'),
+       ellipse(shoulder[0],shoulder[1]+4,48,55,fill=base),
+       path(f'M{f(shoulder[0]-10)} {f(shoulder[1]-12)} Q{f(elbow_[0]-15)} {f(elbow_[1]-8)} {f(wrist[0]-7)} {f(wrist[1]-4)}',fill='none',stroke=P['furLight'],stroke_width='9',stroke_linecap='round',opacity='0.20'),
+       path(f'M{f(elbow_[0]-24)} {f(elbow_[1]-8)} Q{f(elbow_[0])} {f(elbow_[1]+9)} {f(elbow_[0]+23)} {f(elbow_[1]-5)}',fill='none',stroke=P['furDark'],stroke_width='4',stroke_linecap='round',opacity='0.38')]
+    # 手掌采用带拇指的兽爪轮廓，而不是圆形连指手。
+    wx,wy=wrist
+    paw=f'M{f(wx-30)} {f(wy-4)} Q{f(wx-38)} {f(wy+23)} {f(wx-24)} {f(wy+47)} Q{f(wx)} {f(wy+65)} {f(wx+29)} {f(wy+43)} L{f(wx+35)} {f(wy+15)} Q{f(wx+50)} {f(wy+6)} {f(wx+42)} {f(wy-9)} Q{f(wx+31)} {f(wy-16)} {f(wx+21)} {f(wy+1)} L{f(wx+17)} {f(wy-13)} Q{f(wx)} {f(wy-26)} {f(wx-30)} {f(wy-4)} Z'
+    s.append(path(paw,fill=base,stroke=P['ink'],stroke_width='4',stroke_linejoin='round'))
+    for j in range(3):
+        x=wx-17+j*16
+        s.append(path(f'M{f(x)} {f(wy+24)} Q{f(x-2)} {f(wy+42)} {f(x+2)} {f(wy+48)}',fill='none',stroke=P['furDark'],stroke_width='3',stroke_linecap='round',opacity='0.72'))
+    return group(''.join(s),id_)
+
+def legs(t):
+    # 双脚与地面固定，重心转移仅发生于上身。
+    s=[]
+    for side,hip,knee,ankle,foot in [
+        ('左',(902,666),(861,794),(850,895),(806,934)),
+        ('右',(1018,666),(1060,794),(1080,895),(1126,934))]:
+        d=f'M{hip[0]} {hip[1]} Q{knee[0]} {knee[1]} {ankle[0]} {ankle[1]}'
+        s += [path(d,fill='none',stroke=P['ink'],stroke_width='116',stroke_linecap='round'),
+              path(d,fill='none',stroke='url(#渐变_毛发)',stroke_width='103',stroke_linecap='round'),
+              path(f'M{foot[0]-48} {foot[1]+9} Q{foot[0]-42} {foot[1]-27} {foot[0]-4} {foot[1]-29} Q{foot[0]+45} {foot[1]-45} {foot[0]+92} {foot[1]-17} Q{foot[0]+118} {foot[1]+2} {foot[0]+92} {foot[1]+22} Q{foot[0]+20} {foot[1]+40} {foot[0]-48} {foot[1]+9} Z',fill=P['furShadow'],stroke=P['ink'],stroke_width='5',stroke_linejoin='round'),
+              path(f'M{foot[0]-30} {foot[1]-13} Q{foot[0]+18} {foot[1]-38} {foot[0]+80} {foot[1]-10}',fill='none',stroke=P['furLight'],stroke_width='8',opacity='0.24',stroke_linecap='round')]
+        for j in range(3):
+            s.append(path(f'M{foot[0]+42+j*22} {foot[1]-10} l10 7',fill='none',stroke=P['furDark'],stroke_width='3',stroke_linecap='round'))
+    return group(''.join(s),'角色_腿部与支撑脚_层')
+
+def tail(t):
+    lag=math.sin(t*2.1-.55)*7 + math.sin(max(0,t-4.5)*5.2)*9*math.exp(-max(0,t-4.5)*1.2)
+    d='M1030 640 C1180 604 1325 718 1398 615 C1434 563 1394 511 1344 530 C1284 553 1288 616 1220 600 C1148 582 1100 564 1040 584 Z'
+    tip='M1328 538 C1389 495 1440 551 1400 615 L1384 604 L1387 626 L1368 619 L1367 641 L1348 631 L1342 654 L1326 640 L1312 663 L1284 663 L1301 644 L1287 638 L1310 620 L1298 610 L1320 596 L1310 582 L1333 571 L1322 556 Z'
+    s=[path(d,fill='url(#渐变_毛发)',stroke=P['ink'],stroke_width='7',stroke_linejoin='round'),path(tip,fill=P['furCream'],opacity='0.92'),
+       path('M1090 608 C1210 596 1308 685 1374 605',fill='none',stroke=P['furLight'],stroke_width='12',opacity='0.18',stroke_linecap='round')]
+    return group(''.join(s),'角色_尾巴_层',transform=f'rotate({f(lag)} 1040 620)')
+
+def torso(t,dry,breath):
+    s=[]
+    body='M841 390 Q875 347 924 346 L996 346 Q1055 348 1084 394 C1110 450 1080 525 1050 582 L1036 672 Q960 708 884 672 L868 580 C835 514 811 447 841 390 Z'
+    s.append(path(body,fill='url(#渐变_毛发)',stroke=P['ink'],stroke_width='7',stroke_linejoin='round'))
+    # 胸肌、浅色腹毛与腹斜肌，保持解剖结构而非夸张变形。
+    s += [path('M857 410 Q903 375 954 410 L950 480 Q890 500 850 457 Z',fill=P['pecLight'],opacity='0.40'),
+          path('M966 410 Q1020 375 1068 414 L1070 458 Q1024 500 970 480 Z',fill=P['pecShade'],opacity='0.35'),
+          path('M917 474 Q960 449 1002 475 L1020 642 Q960 681 900 642 Z',fill='url(#渐变_胸腹)',opacity='0.93'),
+          path('M859 413 Q902 449 950 438 M971 438 Q1020 451 1064 414',fill='none',stroke=P['furDark'],stroke_width='5',opacity='0.55',stroke_linecap='round'),
+          path('M960 474 L960 634 M918 533 Q960 551 1003 533 M913 585 Q960 603 1008 585',fill='none',stroke=P['abLine'],stroke_width='4',opacity='0.58',stroke_linecap='round'),
+          path('M874 491 Q846 554 892 625 M1048 491 Q1074 552 1028 625',fill='none',stroke=P['furDark'],stroke_width='6',opacity='0.38',stroke_linecap='round'),
+          path('M873 389 Q918 359 951 369',fill='none',stroke=P['white'],stroke_width='11',opacity=f(.18+.20*(1-dry)),stroke_linecap='round')]
+    # 胸口的湿毛绺与后期蓬松毛尖。
+    for i in range(7):
+        x=920+i*14; y=474+abs(3-i)*3
+        s.append(path(f'M{x} {y} q{-8+i*2} 28 {(-5+i)} 48',fill='none',stroke=P['wetClump'],stroke_width='5',opacity=f(.58*(1-dry)),stroke_linecap='round'))
+    fluff=[('M907 477 l-18 23 l25 -7', 'M919 483'),('M1008 477 l18 23 l-25 -7','')]
+    s.append(path('M912 480 l-18 27 l27 -9 l-10 25 M1008 480 l18 27 l-27 -9 l10 25',fill='none',stroke=P['furCream'],stroke_width='8',opacity=f(.78*dry),stroke_linecap='round',stroke_linejoin='round'))
+    return group(''.join(s),'角色_躯干肌肉与胸腹_层')
+
+def waist_towel(t):
+    sway=3*math.sin(t*1.7)
+    s=[path(f'M870 628 Q960 {f(648+sway)} 1048 628 L1065 759 Q1010 788 961 766 Q912 791 853 759 Z',fill='url(#渐变_浴巾)',stroke=P['ink'],stroke_width='6',stroke_linejoin='round'),
+       path(f'M870 628 Q960 {f(648+sway)} 1048 628 L1046 670 Q960 690 867 666 Z',fill=P['waistLight'],opacity='0.55'),
+       path('M885 677 Q875 718 884 754 M929 683 Q919 724 927 765 M990 682 Q1005 726 994 765 M1030 672 Q1045 716 1036 752',fill='none',stroke=P['waistFold'],stroke_width='5',opacity='0.28',stroke_linecap='round'),
+       path('M875 746 Q912 770 960 750 Q1008 774 1055 746',fill='none',stroke=P['waistDark'],stroke_width='9',opacity='0.72'),
+       path('M1018 642 q45 10 53 45 q-34 -12 -58 9',fill=P['waistDark'],stroke=P['ink'],stroke_width='4')]
+    return group(''.join(s),'角色_腰间浴巾_遮挡层')
+
+def head(t,dry,cover):
+    shake=0
+    if 4.5<t<5.75:
+        u=t-4.5; shake=13*math.sin(u*math.tau*2.25)*math.sin(math.pi*u/1.25)
+    nod=keys(t,[(0,0),(1.2,-2),(1.6,3),(2.9,3),(3.4,0),(4.5,0),(5.8,0),(7,-3),(8,-3)])
+    rub=cover*math.sin(t*math.tau*2.1)*7
+    sx=1+cover*.035; sy=1-cover*.055
+    earlag=-shake*.48+math.sin(t*2.4-.8)*2.2
+    s=[]
+    # 耳朵独立相位。
+    s.append(group(path('M871 205 L836 87 Q902 107 927 178 Z',fill='url(#渐变_毛发)',stroke=P['ink'],stroke_width='7')+path('M866 173 L851 116 Q883 130 901 171 Z',fill=P['earInner'],opacity='0.58'),'角色_左耳_层',transform=f'rotate({f(earlag)} 895 190)'))
+    s.append(group(path('M1046 202 L1084 88 Q1019 105 991 178 Z',fill='url(#渐变_毛发)',stroke=P['ink'],stroke_width='7')+path('M1053 172 L1070 117 Q1036 130 1018 171 Z',fill=P['earInner'],opacity='0.58'),'角色_右耳_层',transform=f'rotate({f(-earlag*.8)} 1023 190)'))
+    s += [path('M878 184 Q960 126 1043 184 L1053 259 Q1040 321 985 344 L935 344 Q879 320 867 259 Z',fill='url(#渐变_毛发)',stroke=P['ink'],stroke_width='7'),
+          path('M899 245 Q921 219 951 238 L960 265 L969 238 Q1000 219 1022 245 L1011 315 Q960 356 909 315 Z',fill='url(#渐变_胸腹)'),
+          path('M913 264 Q960 236 1007 264 L1000 310 Q960 338 920 310 Z',fill=P['muzzle']),
+          path('M939 257 Q960 243 981 257 L974 277 Q960 286 946 277 Z',fill=P['nose']),
+          path('M960 281 L960 297 M960 297 Q943 310 930 298 M960 297 Q977 310 990 298',fill='none',stroke=P['ink'],stroke_width='4',stroke_linecap='round'),
+          path('M889 198 Q914 165 947 161 M1032 198 Q1005 165 973 161',fill='none',stroke=P['furLight'],stroke_width='9',opacity='0.28',stroke_linecap='round')]
+    # 眼睛在覆头与眨眼时闭合；视线落向擦拭动作。
+    blink=max(math.exp(-((t-b)/.065)**2) for b in (.62,3.92,6.82))
+    eye_open=(1-blink)*(1-cover)
+    gaze=keys(t,[(0,0),(1.1,3),(3.2,5),(4.4,0),(5.8,-2),(7,0),(8,0)])
+    for side,cx in [('左',920),('右',1000)]:
+        if eye_open>.12:
+            s += [path(f'M{cx-28} 224 Q{cx} 205 {cx+27} 224 Q{cx} 243 {cx-28} 224 Z',fill=P['eyeWhite'],opacity=f(eye_open)),
+                  ellipse(cx+gaze,224,12,15,fill='url(#渐变_眼神)'),ellipse(cx+gaze+2,225,5,10,fill=P['ink']),circle(cx+gaze-3,218,3,fill=P['white'])]
+        else:
+            s.append(path(f'M{cx-27} 226 Q{cx} 239 {cx+26} 225',fill='none',stroke=P['ink'],stroke_width='6',stroke_linecap='round'))
+        s.append(path(f'M{cx-30} 199 Q{cx} 186 {cx+29} 201',fill='none',stroke=P['furDark'],stroke_width='8',stroke_linecap='round'))
+    # 湿发绺逐渐消失，蓬松轮廓逐渐出现。
+    wet=''.join(path(f'M{900+i*20} {174-(i%2)*8} q{-5+i%3*5} 28 {-9+i%4*6} 48',fill='none',stroke=P['furDark'],stroke_width='7',opacity=f(.65*(1-dry)),stroke_linecap='round') for i in range(7))
+    s.append(group(wet,'角色_湿发绺_层'))
+    s.append(path('M889 177 l-22 -24 l31 7 l-5 -29 l29 21 M1030 177 l22 -24 l-31 7 l5 -29 l-29 21',fill='none',stroke=P['furLight'],stroke_width='9',opacity=f(.85*dry),stroke_linecap='round',stroke_linejoin='round'))
+    # 覆头毛巾属于头部子层。同一组三次贝塞尔控制点由平展形态连续形变为包裹形态。
+    if cover>.0001:
+        c=keys(t,[(0,(1160,640)),(.8,(1160,640)),(1.5,(960,260)),(3.0,(960,260)),(3.45,(910,430)),(4.45,(875,470)),(5.0,(1130,620)),(5.7,(1130,620)),(6.25,(935,485)),(7.05,(850,420)),(8,(850,420))])
+        ang=keys(t,[(0,-10),(.8,-10),(1.5,0),(3,0),(3.45,-18),(4.45,12),(5,8),(5.7,8),(6.25,-12),(7.05,-8),(8,-8)])
+        width=keys(t,[(0,155),(1.5,265),(3,265),(3.45,230),(5,150),(5.7,150),(6.25,225),(7.05,175),(8,175)])
+        height=keys(t,[(0,205),(1.5,250),(3,250),(3.45,225),(5,230),(5.7,230),(6.25,190),(7.05,250),(8,250)])
+        w=width/2; h=height/2; drop=10+28*smooth(t,.8,4.8); cx,cy=c; bot=cy+h+drop; top=cy-h
+        flat=[(cx-w,top),(cx-w*.7,top-16),(cx-w*.25,top-16),(cx,top),
+              (cx+w*.25,top-16),(cx+w*.7,top-16),(cx+w,top),(cx+w+8,cy-h*.3),(cx+w+8,cy+h*.4),(cx+w+8,bot),
+              (cx+w*.7,bot-18),(cx+w*.35,bot-18),(cx+w*.15,bot),(cx+w*.1,bot),(cx+w*.05,bot),(cx,bot),
+              (cx-w*.05,bot),(cx-w*.1,bot),(cx-w*.15,bot),(cx-w*.5,bot-18),(cx-w*.8,bot-18),(cx-w-8,bot),
+              (cx-w-8,cy+h*.3),(cx-w-8,cy-h*.3),(cx-w,top)]
+        wrapped=[(824,180),(838,105),(910,100),(960,112),(1012,100),(1082,111),(1098,184),
+                 (1105,240),(1115,300),(1122,344),(1094,383),(1060,370),(1042,356),(1030,310),(1022,260),(1014,226),
+                 (980,205),(940,205),(906,230),(895,280),(890,340),(884,378),(836,390),(810,370),(798,350),(815,290),(815,230),(824,180)]
+        a=math.radians(ang); rotated=[]
+        for x,y in flat:
+            dx,dy=x-cx,y-cy; rotated.append((cx+dx*math.cos(a)-dy*math.sin(a),cy+dx*math.sin(a)+dy*math.cos(a)))
+        pts=[(mix(aa[0],bb[0],cover),mix(aa[1],bb[1],cover)) for aa,bb in zip(rotated,wrapped)]
+        d=f'M{f(pts[0][0])} {f(pts[0][1])}'+''.join(f' C{f(pts[i][0])} {f(pts[i][1])} {f(pts[i+1][0])} {f(pts[i+1][1])} {f(pts[i+2][0])} {f(pts[i+2][1])}' for i in range(1,len(pts),3))+' Z'
+        towel=[path(d,fill='url(#渐变_毛巾)',stroke=P['towelEdge'],stroke_width='7',stroke_linejoin='round'),
+               path('M843 169 Q902 124 952 151 Q1008 116 1078 169 M825 205 Q858 255 824 343 M1090 201 Q1060 257 1097 333 M906 130 Q923 173 913 217 M1008 127 Q992 169 1007 213',fill='none',stroke=P['towelLight'],stroke_width='9',opacity=f(.42*cover),stroke_linecap='round'),
+               path('M803 326 Q840 348 882 327 L884 351 Q839 373 800 349 Z M1040 326 Q1080 345 1116 322 L1121 345 Q1082 368 1042 350 Z',fill=P['towelWet'],opacity=f(.62*cover)),
+               path('M810 337 Q844 356 880 339 M1044 339 Q1080 355 1113 336',fill='none',stroke=P['towelLight'],stroke_width='5',opacity=f(.58*cover),stroke_linecap='round')]
+        for row in range(3):
+            for col in range(8):
+                x=854+col*29+(row%2)*8; y=151+row*27
+                towel.append(path(f'M{x} {y} q5 -6 10 0 q-5 7 -10 0',fill='none',stroke=P['towelWet'],stroke_width='2.4',opacity=f(.26*cover),stroke_linecap='round'))
+        s.append(group(''.join(towel),'毛巾_覆头挤压_层',transform=f'translate({f(rub*.38)} 0)'))
+    tr=f'translate({f(rub)} 0) rotate({f(shake+nod)} 960 338) translate(960 250) scale({f(sx)} {f(sy)}) translate(-960 -250)'
+    return group(''.join(s),'角色_头部五官与覆头毛巾_层',transform=tr)
+
+def generic_towel(t,cover,dry):
+    c=keys(t,[(0,(1160,640)),(.8,(1160,640)),(1.5,(960,260)),(3.0,(960,260)),(3.45,(910,430)),(4.45,(875,470)),(5.0,(1130,620)),(5.7,(1130,620)),(6.25,(935,485)),(7.05,(850,420)),(8,(850,420))])
+    ang=keys(t,[(0,-10),(.8,-10),(1.5,0),(3,0),(3.45,-18),(4.45,12),(5,8),(5.7,8),(6.25,-12),(7.05,-8),(8,-8)])
+    width=keys(t,[(0,155),(1.5,265),(3,265),(3.45,230),(5,150),(5.7,150),(6.25,225),(7.05,175),(8,175)])
+    height=keys(t,[(0,205),(1.5,250),(3,250),(3.45,225),(5,230),(5.7,230),(6.25,190),(7.05,250),(8,250)])
+    wet=smooth(t,.8,4.8); drop=10+28*wet
+    w=width/2; h=height/2
+    d=f'M{f(-w)} {f(-h)} Q0 {f(-h-16)} {f(w)} {f(-h)} L{f(w+8)} {f(h+drop)} Q{f(w*.45)} {f(h+drop-18)} 0 {f(h+drop)} Q{f(-w*.45)} {f(h+drop-18)} {f(-w-8)} {f(h+drop)} Z'
+    fold=''
+    for i in range(5):
+        x=-w+width*(i+1)/6
+        fold+=path(f'M{f(x)} {f(-h+20)} Q{f(x-12)} 0 {f(x+5)} {f(h+drop-16)}',fill='none',stroke=P['towelWet'],stroke_width='5',opacity='0.38',stroke_linecap='round')
+    hem=path(f'M{f(-w)} {f(h+drop-18)} Q0 {f(h+drop-38)} {f(w)} {f(h+drop-18)}',fill='none',stroke=P['towelLight'],stroke_width='8',opacity='0.45')
+    dark=rect(-w,-h,width,height+drop,fill=P['towelWet'],opacity=f(.12+.20*wet),rx='20')
+    s=path(d,fill='url(#渐变_毛巾)',stroke=P['towelEdge'],stroke_width='6',stroke_linejoin='round')+dark+fold+hem
+    return group(s,'毛巾_擦干主巾_形变层',transform=f'translate({f(c[0])} {f(c[1])}) rotate({f(ang)})',opacity='0' if cover>.0001 else '1')
+
+def arms(t):
+    rub=math.sin(t*math.tau*2.1)*18 if 1.45<t<3.05 else 0
+    wipe=math.sin((t-3.1)*math.tau*1.15)*20 if 3.1<t<4.5 else 0
+    final=math.sin((t-5.7)*math.tau*.9)*18 if 5.7<t<7.0 else 0
+    lw=keys(t,[(0,(780,680)),(.8,(770,620)),(1.5,(825,275)),(3.0,(825,275)),(3.45,(775,650)),(4.5,(780,660)),(5.0,(790,630)),(5.7,(790,630)),(6.25,(785,640)),(7.05,(820,625)),(8,(820,625))])
+    rw=keys(t,[(0,(1140,640)),(.8,(1130,610)),(1.5,(1095,275)),(3.0,(1095,275)),(3.45,(950,420)),(4.5,(890,470)),(5.0,(1130,610)),(5.7,(1130,610)),(6.25,(935,475)),(7.05,(1120,680)),(8,(1120,680))])
+    if 1.45<t<3.05: lw=(lw[0]-rub*.35,lw[1]+rub); rw=(rw[0]+rub*.35,rw[1]-rub)
+    if 3.1<t<4.5: rw=(rw[0]+wipe,rw[1]+abs(wipe)*.18)
+    if 5.7<t<7.0: rw=(rw[0]+final,rw[1]-abs(final)*.25)
+    ls,rs=(838,405),(1082,405)
+    le=ik(ls,lw,1 if lw[1]>ls[1] else -1); re=ik(rs,rw,-1 if rw[1]>rs[1] else 1)
+    return limb(ls,le,lw,'角色_左臂后层',True),limb(rs,re,rw,'角色_右臂前层',False),(lw,rw)
+
+def fur_details(t,dry):
+    s=[]
+    # 肩部与手臂的湿毛绺 -> 干态毛尖，单向透明度递进。
+    for side,cx in [('左',850),('右',1070)]:
+        for i in range(4):
+            x=cx-30+i*20
+            s.append(path(f'M{x} 395 q{-8+i*3} 25 {-6+i*2} 47',fill='none',stroke=P['furDark'],stroke_width='6',opacity=f(.48*(1-dry)),stroke_linecap='round'))
+        s.append(path(f'M{cx-45} 388 l-20 20 l27 -4 l-12 24 M{cx+38} 390 l20 20 l-27 -4 l12 24',fill='none',stroke=P['furLight'],stroke_width='7',opacity=f(.65*dry),stroke_linecap='round'))
+    return group(''.join(s),'角色_毛发干湿细节_层')
+
+def water_drops(t,dry):
+    rng=random.Random(SEED+301); s=[]
+    # 体表水滴：垂直加速，生命周期由 y=944 的地面交点计算，末端融入水渍。
+    for i in range(36):
+        x=rng.uniform(825,1095); y=rng.uniform(355,680); birth=rng.uniform(-1.5,2.7); g=420
+        life=math.sqrt(2*(944-y)/g); age=t-birth
+        if 0<age<life:
+            yy=y+.5*g*age*age; xx=x+math.sin(i)*8*age
+            op=.75*smooth(age,0,.12)*(1-smooth(age,life-.12,life))
+            s.append(group(ellipse(0,0,5,10,fill=P['water'],opacity='0.75')+circle(-1.5,-3,1.7,fill=P['white'],opacity='0.9'),f'FX_水珠_{i:03d}',transform=f'translate({f(xx)} {f(yy)})',opacity=f(op)))
+        if life-.12<=age<life+.10:
+            u=clamp((age-life+.12)/.22)
+            s.append(ellipse(x,944,8+28*u,2+6*u,fill='none',stroke=P['water'],stroke_width='2',opacity=f(.38*(1-u)),id=f'FX_落地涟漪_{i:03d}'))
+    # 甩水：初速度沿切线；由抛物线与地面交点求生命周期，不在半空提前消亡。
+    for i in range(52):
+        birth=4.58+rng.uniform(0,.72); age=t-birth
+        side=-1 if i%2 else 1
+        x0=960+side*rng.uniform(40,180); y0=rng.uniform(190,570)
+        vx=side*rng.uniform(170,390); vy=rng.uniform(-230,-40); g=420
+        life=(-vy+math.sqrt(vy*vy+2*g*(944-y0)))/g
+        if 0<age<life:
+            x=x0+vx*age; y=y0+vy*age+.5*g*age*age
+            op=.9*(1-smooth(age,life-.15,life))
+            s.append(group(path('M0 -9 Q8 2 0 10 Q-8 2 0 -9 Z',fill=P['water'])+circle(-2,-2,1.7,fill=P['white']),f'FX_甩水_{i:03d}',transform=f'translate({f(x)} {f(y)}) rotate({f(-side*25)})',opacity=f(op)))
+        if life-.15<=age<life+.10:
+            u=clamp((age-life+.15)/.25); xx=x0+vx*life
+            s.append(ellipse(xx,944,10+34*u,2+7*u,fill='none',stroke=P['water'],stroke_width='2',opacity=f(.42*(1-u)),id=f'FX_甩水落地_{i:03d}'))
+    return group(''.join(s),'FX_水珠与飞溅_层')
+
+def highlights(t,dry):
+    op=.12+.30*(1-dry)
+    s=[path('M817 410 Q790 485 823 547',fill='none',stroke=P['white'],stroke_width='13',opacity=f(op),stroke_linecap='round'),
+       path('M889 172 Q861 229 884 282',fill='none',stroke=P['white'],stroke_width='9',opacity=f(op+.06),stroke_linecap='round'),
+       path('M1036 700 Q1085 767 1082 839',fill='none',stroke=P['white'],stroke_width='10',opacity=f(op*.65),stroke_linecap='round'),
+       ellipse(960,522,290,390,fill='none',stroke=P['amber'],stroke_width='3',opacity='0.08')]
+    return group(''.join(s),'光影_水膜与轮廓高光_叠加层')
+
+def scene(t):
+    dry=smooth(t,1.35,7.0)
+    breath=math.sin(t*math.tau*.42)*.006
+    cover=smooth(t,1.25,1.48)*(1-smooth(t,2.92,3.20))
+    weight=keys(t,[(0,-5),(1.2,-5),(3.2,3),(4.5,0),(5.8,0),(7.1,9),(8,9)])
+    upper_transform=f'translate({f(weight)} 0) translate(960 650) scale({f(1-breath*.35)} {f(1+breath)}) translate(-960 -650)'
+    left_arm,right_arm,_=arms(t)
+    layers=[background(t),steam(t,False),ground_fx(t,dry),tail(t),legs(t)]
+    upper=[left_arm,torso(t,dry,breath),waist_towel(t),generic_towel(t,cover,dry),right_arm,head(t,dry,cover),fur_details(t,dry)]
+    layers.append(group(''.join(upper),'角色_上身绑定_呼吸与重心',transform=upper_transform))
+    layers += [water_drops(t,dry),steam(t,True),highlights(t,dry)]
+    metadata=f'<metadata>角色：岚，28岁，明确成年狼兽人。时间 {t:.4f}s；帧 {round(t*FPS):03d}。矢量分层顺序：背景→远景蒸汽→地面水渍→尾巴→腿部→左臂后层→躯干→腰间浴巾→擦干主巾→右臂前层→头部/覆头毛巾→毛发细节→水珠→前景蒸汽→高光。</metadata>'
+    return f'''<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}" role="img" aria-label="成年狼兽人沐浴后擦干，非露骨艺术动画">
+<title>浴后·暖意</title>{metadata}{defs()}{''.join(layers)}</svg>'''
+
+BEATS=[(0,'水汽站定'),(19,'取巾预备'),(36,'覆头揉擦'),(71,'擦肩背部'),(96,'擦肩收势'),(113,'甩水抛滴'),(132,'抖毛跟随'),(156,'局部补擦'),(180,'松弛定格')]
+
+def render_frames(out:Path,frames,scale=1.0,keep_svg=True):
+    import cairosvg
+    svgdir=out/'SVG帧序列'; pngdir=out/'PNG帧序列'
+    if keep_svg: svgdir.mkdir(parents=True,exist_ok=True)
+    pngdir.mkdir(parents=True,exist_ok=True)
+    for n in frames:
+        svg=scene(n/FPS)
+        if keep_svg: (svgdir/f'帧{n:03d}.svg').write_text(svg,encoding='utf-8')
+        cairosvg.svg2png(bytestring=svg.encode('utf-8'),write_to=str(pngdir/f'帧{n:03d}.png'),output_width=round(W*scale),output_height=round(H*scale))
+        print(f'渲染帧 {n:03d}/{max(frames):03d}',flush=True)
+
+def contact_sheet(out:Path,name='D2_关键帧总览.png',before=False):
+    from PIL import Image,ImageDraw,ImageFont
+    try: font=ImageFont.truetype('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',28)
+    except: font=ImageFont.load_default()
+    try: small=ImageFont.truetype('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',22)
+    except: small=font
+    tw,th=480,270; margin=24; labelh=46; cols=3; rows=math.ceil(len(BEATS)/cols)
+    sheet=Image.new('RGB',(cols*(tw+margin)+margin,rows*(th+labelh+margin)+margin),(14,27,35)); d=ImageDraw.Draw(sheet)
+    for i,(n,label) in enumerate(BEATS):
+        im=Image.open(out/'PNG帧序列'/f'帧{n:03d}.png').convert('RGB'); im.thumbnail((tw,th),Image.Resampling.LANCZOS)
+        x=margin+(i%cols)*(tw+margin); y=margin+(i//cols)*(th+labelh+margin)
+        sheet.paste(im,(x,y)); d.text((x,y+th+7),f'帧{n:03d} · {n/FPS:.2f}s · {label}',font=small,fill=(234,224,202))
+    sheet.save(out/name)
+
+def export_keyframes(out:Path):
+    import shutil
+    dest=out/'D2_关键帧'; dest.mkdir(parents=True,exist_ok=True)
+    for n,label in BEATS:
+        shutil.copy2(out/'PNG帧序列'/f'帧{n:03d}.png',dest/f'帧{n:03d}_{n/FPS:.2f}s_{label}.png')
+
+def main():
+    ap=argparse.ArgumentParser(description='渲染《浴后·暖意》全矢量动画')
+    ap.add_argument('--out',default=str(Path(__file__).resolve().parents[1]/'渲染输出'))
+    ap.add_argument('--keyframes-only',action='store_true')
+    ap.add_argument('--frames',default='')
+    ap.add_argument('--scale',type=float,default=1.0)
+    ap.add_argument('--video',action='store_true')
+    args=ap.parse_args(); out=Path(args.out); out.mkdir(parents=True,exist_ok=True)
+    if args.frames: frames=[int(x) for x in args.frames.split(',')]
+    elif args.keyframes_only: frames=[n for n,_ in BEATS]
+    else: frames=list(range(round(DURATION*FPS)))
+    render_frames(out,frames,args.scale)
+    if args.keyframes_only or args.video:
+        contact_sheet(out); export_keyframes(out)
+    if args.video:
+        subprocess.run(['ffmpeg','-y','-framerate',str(FPS),'-i',str(out/'PNG帧序列/帧%03d.png'),'-c:v','libx264','-preset','slow','-crf','18','-pix_fmt','yuv420p','-movflags','+faststart',str(out/'D3_浴后暖意_整片预览.mp4')],check=True)
+
+if __name__=='__main__': main()
