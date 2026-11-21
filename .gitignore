@@ -1,0 +1,22 @@
+# 依赖与构建产物
+node_modules/
+dist/
+build/
+.vite/
+.next/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# 日志与临时文件
+*.log
+.cache/
+tmp/
+
+# 环境变量（试验不应有密钥，保险起见）
+.env
+.env.*
